@@ -85,6 +85,39 @@ function escapeHtml(s) {
     .replace(/'/g, '&#39;');
 }
 
+/* 手动编码 32 位 BMP(自上而下,BGRA);浏览器 canvas 普遍不支持 BMP 输出编码,
+   手动编码保证各浏览器都能真正输出 BMP */
+function encodeBMPBuffer(imgData) {
+  var w = imgData.width | 0, h = imgData.height | 0;
+  var px = imgData.data;
+  if (w <= 0 || h <= 0 || !px || px.length < w * h * 4) throw new Error('图像数据无效');
+  var headerSize = 54; /* 14 文件头 + 40 信息头 */
+  var pixelBytes = w * h * 4;
+  var buf = new ArrayBuffer(headerSize + pixelBytes);
+  var dv = new DataView(buf);
+  dv.setUint8(0, 0x42); dv.setUint8(1, 0x4D);       /* 'BM' */
+  dv.setUint32(2, headerSize + pixelBytes, true);    /* 文件总大小 */
+  dv.setUint32(10, headerSize, true);                /* 像素数据偏移 */
+  dv.setUint32(14, 40, true);                        /* 信息头长度 */
+  dv.setInt32(18, w, true);                          /* 宽 */
+  dv.setInt32(22, -h, true);                         /* 高(负数=自上而下,免翻转) */
+  dv.setUint16(26, 1, true);                         /* planes */
+  dv.setUint16(28, 32, true);                        /* 32 位色深,无需行填充 */
+  dv.setUint32(30, 0, true);                         /* BI_RGB 无压缩 */
+  dv.setUint32(34, pixelBytes, true);                 /* 像素数据大小 */
+  dv.setInt32(38, 2835, true);                       /* 水平分辨率 */
+  dv.setInt32(42, 2835, true);                       /* 垂直分辨率 */
+  var u8 = new Uint8Array(buf);
+  var o = headerSize;
+  for (var i = 0; i < pixelBytes; i += 4) {
+    u8[o++] = px[i + 2];  /* B */
+    u8[o++] = px[i + 1];  /* G */
+    u8[o++] = px[i];      /* R */
+    u8[o++] = px[i + 3];  /* A */
+  }
+  return u8;
+}
+
 /* ============ 状态(仅浏览器中使用) ============ */
 var items = [];          /* 转换任务列表 */
 var uidSeed = 0;
@@ -186,12 +219,30 @@ function loadImage(it, cb) {
   img.src = it.thumbUrl;
 }
 
+function finishConvert(it, blob, fmt, t) {
+  if (it.outUrl) { try { (window.URL || window.webkitURL).revokeObjectURL(it.outUrl); } catch (e) {} }
+  it.outBlob = blob;
+  it.outUrl = (window.URL || window.webkitURL).createObjectURL(blob);
+  it.outName = buildFileName(it.name, fmt);
+  it.outSize = blob.size;
+  it.outW = t.w;
+  it.outH = t.h;
+  it.status = 'done';
+}
+
+function failConvert(it, msg, done) {
+  it.status = 'fail';
+  it.failMsg = msg;
+  render();
+  done();
+}
+
 function convertItem(it, done) {
   it.status = 'doing';
   it.failMsg = '';
   render();
   loadImage(it, function (err, img) {
-    if (err) { it.status = 'fail'; it.failMsg = err.message; render(); done(); return; }
+    if (err) { failConvert(it, err.message, done); return; }
     var t = computeTargetSize(it.imgW, it.imgH, settings.sizeMode,
       settings.width, settings.height, settings.keepRatio);
     var canvas = document.createElement('canvas');
@@ -204,31 +255,37 @@ function convertItem(it, done) {
       ctx.fillRect(0, 0, t.w, t.h);
     }
     ctx.drawImage(img, 0, 0, t.w, t.h);
+    /* BMP:浏览器 canvas 普遍不支持 BMP 编码,改用手动编码,保证各浏览器可用 */
+    if (settings.fmt === 'bmp') {
+      try {
+        var imgData = ctx.getImageData(0, 0, t.w, t.h);
+        var bmpBlob = new Blob([encodeBMPBuffer(imgData)], { type: 'image/bmp' });
+        finishConvert(it, bmpBlob, 'bmp', t);
+      } catch (e) {
+        failConvert(it, '转换出错：' + e.message, done);
+        return;
+      }
+      render();
+      done();
+      return;
+    }
     var mime = MIME_OF[settings.fmt];
     var q = LOSSY[settings.fmt] ? settings.quality / 100 : undefined;
     try {
       canvas.toBlob(function (blob) {
         if (!blob) {
-          it.status = 'fail';
-          it.failMsg = '该浏览器不支持输出 ' + settings.fmt.toUpperCase() + ' 格式';
+          failConvert(it, '该浏览器不支持输出 ' + settings.fmt.toUpperCase() + ' 格式', done);
+        } else if (blob.type && blob.type !== mime) {
+          /* 按规范:不支持的编码会静默回退为 PNG;此时明确报错,绝不给出名不副实的文件 */
+          failConvert(it, '该浏览器不支持输出 ' + settings.fmt.toUpperCase() + ' 格式', done);
         } else {
-          if (it.outUrl) { try { (window.URL || window.webkitURL).revokeObjectURL(it.outUrl); } catch (e) {} }
-          it.outBlob = blob;
-          it.outUrl = (window.URL || window.webkitURL).createObjectURL(blob);
-          it.outName = buildFileName(it.name, settings.fmt);
-          it.outSize = blob.size;
-          it.outW = t.w;
-          it.outH = t.h;
-          it.status = 'done';
+          finishConvert(it, blob, settings.fmt, t);
+          render();
+          done();
         }
-        render();
-        done();
       }, mime, q);
     } catch (e) {
-      it.status = 'fail';
-      it.failMsg = '转换出错：' + e.message;
-      render();
-      done();
+      failConvert(it, '转换出错：' + e.message, done);
     }
   });
 }
@@ -358,13 +415,12 @@ function bindListEvents() {
   });
 }
 
-/* AVIF 输出支持检测(同步) */
-function avifOutputSupported() {
+/* 检测浏览器 canvas 是否支持某种输出编码(同步) */
+function canvasEncodeSupported(mime) {
   try {
     var c = document.createElement('canvas');
     c.width = 2; c.height = 2;
-    var url = c.toDataURL('image/avif');
-    return url.indexOf('data:image/avif') === 0;
+    return c.toDataURL(mime).indexOf('data:' + mime) === 0;
   } catch (e) { return false; }
 }
 
@@ -421,7 +477,9 @@ function bindUI() {
       });
     })(fmtBtns[i]);
   }
-  if (avifOutputSupported()) { $('avifBtn').hidden = false; }
+  /* 不支持的输出编码直接隐藏按钮,避免用户选到名不副实的格式(BMP 走手动编码,始终可用) */
+  if (!canvasEncodeSupported('image/webp')) { $('webpBtn').hidden = true; }
+  if (canvasEncodeSupported('image/avif')) { $('avifBtn').hidden = false; }
 
   /* 质量 */
   $('quality').addEventListener('input', function () {
@@ -494,6 +552,7 @@ if (typeof module !== 'undefined' && module.exports) {
     computeTargetSize: computeTargetSize,
     compressionText: compressionText,
     escapeHtml: escapeHtml,
+    encodeBMPBuffer: encodeBMPBuffer,
     MIME_OF: MIME_OF,
     EXT_OF: EXT_OF,
     LOSSY: LOSSY
