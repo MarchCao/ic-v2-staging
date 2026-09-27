@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>图片格式转换 - 纯本地 · 无广告 · 免费</title>
+<meta name="description" content="纯本地图片格式转换工具：PNG、JPEG、WebP、BMP、AVIF 互转，图片不上传服务器，无广告不收费。">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="topbar">
+  <h1>🖼️ 图片格式转换</h1>
+  <p class="tagline">纯本地转换 · 不上传服务器 · 无广告 · 不收费</p>
+</header>
+
+<main class="container">
+
+  <!-- 上传区 -->
+  <section class="card">
+    <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="选择图片">
+      <div class="dz-icon">📤</div>
+      <div class="dz-text">点击选择图片，或拖拽到这里</div>
+      <div class="dz-hint">支持多选 · 也可直接 Ctrl+V 粘贴截图</div>
+      <input type="file" id="fileInput" accept="image/*" multiple hidden>
+    </div>
+    <div id="uploadTip" class="tip" hidden></div>
+  </section>
+
+  <!-- 转换设置 -->
+  <section class="card">
+    <h2>⚙️ 转换设置</h2>
+
+    <div class="setting-row">
+      <span class="setting-label">输出格式</span>
+      <div class="fmt-btns" id="fmtBtns">
+        <button class="fmt-btn" data-fmt="png">PNG</button>
+        <button class="fmt-btn active" data-fmt="jpeg">JPEG</button>
+        <button class="fmt-btn" data-fmt="webp">WebP</button>
+        <button class="fmt-btn" data-fmt="bmp">BMP</button>
+        <button class="fmt-btn" data-fmt="avif" id="avifBtn" hidden>AVIF</button>
+      </div>
+    </div>
+
+    <div class="setting-row" id="qualityRow">
+      <span class="setting-label">图片质量 <b id="qualityVal">85</b></span>
+      <input type="range" id="quality" min="1" max="100" value="85" step="1">
+      <span class="range-hint">仅 JPEG / WebP / AVIF 有效</span>
+    </div>
+
+    <div class="setting-row">
+      <span class="setting-label">输出尺寸</span>
+      <div class="size-modes" id="sizeModes">
+        <label><input type="radio" name="sizeMode" value="orig" checked> 保持原尺寸</label>
+        <label><input type="radio" name="sizeMode" value="width"> 按宽度</label>
+        <label><input type="radio" name="sizeMode" value="height"> 按高度</label>
+        <label><input type="radio" name="sizeMode" value="custom"> 自定义宽高</label>
+      </div>
+    </div>
+
+    <div class="setting-row" id="sizeInputs" hidden>
+      <span class="setting-label">尺寸(px)</span>
+      <input type="number" id="inWidth" class="num" min="1" max="16000" placeholder="宽">
+      <span class="times">×</span>
+      <input type="number" id="inHeight" class="num" min="1" max="16000" placeholder="高">
+      <label class="ratio" id="ratioWrap" hidden><input type="checkbox" id="keepRatio" checked> 保持纵横比</label>
+    </div>
+  </section>
+
+  <!-- 批量操作 -->
+  <section class="card actions">
+    <button id="btnConvertAll" class="btn primary" disabled>⚡ 全部转换</button>
+    <button id="btnZip" class="btn" disabled>📦 打包下载 ZIP</button>
+    <button id="btnClear" class="btn danger" disabled>🗑️ 清空列表</button>
+    <span id="countLabel" class="count"></span>
+  </section>
+
+  <!-- 文件列表 -->
+  <section class="card">
+    <h2>📋 图片列表</h2>
+    <div id="emptyState" class="empty">还没有图片，快去添加吧 👆</div>
+    <ul id="fileList" class="file-list"></ul>
+  </section>
+
+  <footer class="foot">
+    所有转换均在您的浏览器本地完成，图片不会上传到任何服务器。<br>
+    若 HEIC / HEIF 格式无法添加，请先在手机相册中导出为 JPG 后再转换。
+  </footer>
+</main>
+
+<!-- 对比预览弹窗 -->
+<div id="modal" class="modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">
+      <span id="modalTitle">原图 / 结果对比</span>
+      <button id="modalClose" class="btn small">✖ 关闭</button>
+    </div>
+    <div class="modal-imgs">
+      <figure>
+        <figcaption>原图 <span id="modalOrigInfo"></span></figcaption>
+        <img id="modalOrig" alt="原图">
+      </figure>
+      <figure>
+        <figcaption>转换后 <span id="modalNewInfo"></span></figcaption>
+        <img id="modalNew" alt="转换结果">
+      </figure>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
