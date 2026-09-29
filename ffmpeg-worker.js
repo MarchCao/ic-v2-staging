@@ -16,14 +16,14 @@
    外层 wrapper 仍用 UMD(ffmpeg.js),在 classic worker 内 importScripts 已验证可行。
    仍保持懒加载:只有进入视频模式 / 首次选择视频时才由主线程创建本 Worker 并 init。
    版本一致性:所有 FFmpeg 文件 URL 统一附加版本参数,避免新旧混用导致偶发加载失败。 */
-var FF_VER = 'v20260929o';
+var FF_VER = 'v20260929p';
 var VENDOR = 'vendor/ffmpeg/';
 var FFMPEG_JS = VENDOR + 'ffmpeg.js?' + FF_VER;            // importScripts 相对 Worker 自身 URL 解析,同源 OK
 var CORE_JS_ABS = new URL(VENDOR + 'esm/ffmpeg-core.js?' + FF_VER, self.location.href).href;
 // UMD 包在 Worker 内无法正确推导分块(814.ffmpeg.js)路径,必须显式传入绝对地址(同源,module worker 合规)
 var CLASS_WORKER_ABS = new URL(VENDOR + 'esm/worker.js?' + FF_VER, self.location.href).href;
-// wasmURL 不传:worker 内部按 coreURL 把 .js 换成 .wasm 自动推导,同源 OK
-// 注意:coreURL 带 ?ver 时,wasm 推导会保留 query,故 wasm 也带版本,版本一致
+// wasmURL 必须显式传入:coreURL 带 ?ver 查询参数时,库内部用 /\.js$/ 推导 wasm 会失败
+var WASM_ABS = new URL(VENDOR + 'esm/ffmpeg-core.wasm?' + FF_VER, self.location.href).href;
 
 var ffmpeg = null;
 var activeId = null;
@@ -78,9 +78,9 @@ async function ensureFfmpeg() {
     if (m && m.message) pushLog(m.message);
   });
   try {
-    await ffmpeg.load({ coreURL: CORE_JS_ABS, classWorkerURL: CLASS_WORKER_ABS });
+    await ffmpeg.load({ coreURL: CORE_JS_ABS, wasmURL: WASM_ABS, classWorkerURL: CLASS_WORKER_ABS });
   } catch (e) {
-    throw new Error('ffmpeg.load() 错误(core:' + CORE_JS_ABS + ', worker:' + CLASS_WORKER_ABS + '):' + (e && e.message || e));
+    throw new Error('ffmpeg.load() 错误(core:' + CORE_JS_ABS + ', wasm:' + WASM_ABS + ', worker:' + CLASS_WORKER_ABS + '):' + (e && e.message || e));
   }
 }
 

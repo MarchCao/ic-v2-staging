@@ -851,7 +851,7 @@ function verifyVideoOutput(buf, fmt) {
 /* ---- 视频引擎(FFmpeg.wasm,懒加载,只在视频模式初始化) ---- */
 
 /* worker 脚本版本: 修改 ffmpeg-worker.js 后务必同步 bump,让浏览器丢弃旧缓存 worker */
-var FFMPEG_WORKER_VER = 'v20260929o';
+var FFMPEG_WORKER_VER = 'v20260929p';
 var ffmpegWorker = null;
 var ffmpegReady = false;
 var ffmpegFailed = false;
