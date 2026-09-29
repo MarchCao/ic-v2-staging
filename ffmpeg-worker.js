@@ -14,13 +14,16 @@
    且 UMD class worker(814)在 module worker 内调 importScripts 会抛错;
    故 class worker 与 core 改用官方 ESM 构建(其 fallback 走合法的动态 import)。
    外层 wrapper 仍用 UMD(ffmpeg.js),在 classic worker 内 importScripts 已验证可行。
-   仍保持懒加载:只有进入视频模式 / 首次选择视频时才由主线程创建本 Worker 并 init。 */
+   仍保持懒加载:只有进入视频模式 / 首次选择视频时才由主线程创建本 Worker 并 init。
+   版本一致性:所有 FFmpeg 文件 URL 统一附加版本参数,避免新旧混用导致偶发加载失败。 */
+var FF_VER = 'v20260929o';
 var VENDOR = 'vendor/ffmpeg/';
-var FFMPEG_JS = VENDOR + 'ffmpeg.js';            // importScripts 相对 Worker 自身 URL 解析,同源 OK
-var CORE_JS_ABS = new URL(VENDOR + 'esm/ffmpeg-core.js', self.location.href).href;
+var FFMPEG_JS = VENDOR + 'ffmpeg.js?' + FF_VER;            // importScripts 相对 Worker 自身 URL 解析,同源 OK
+var CORE_JS_ABS = new URL(VENDOR + 'esm/ffmpeg-core.js?' + FF_VER, self.location.href).href;
 // UMD 包在 Worker 内无法正确推导分块(814.ffmpeg.js)路径,必须显式传入绝对地址(同源,module worker 合规)
-var CLASS_WORKER_ABS = new URL(VENDOR + 'esm/worker.js', self.location.href).href;
+var CLASS_WORKER_ABS = new URL(VENDOR + 'esm/worker.js?' + FF_VER, self.location.href).href;
 // wasmURL 不传:worker 内部按 coreURL 把 .js 换成 .wasm 自动推导,同源 OK
+// 注意:coreURL 带 ?ver 时,wasm 推导会保留 query,故 wasm 也带版本,版本一致
 
 var ffmpeg = null;
 var activeId = null;
@@ -58,9 +61,13 @@ async function ensureFfmpeg() {
   if (ffmpeg && !ffmpegBroken) return;
   if (ffmpeg) { try { await ffmpeg.terminate(); } catch (e) {} ffmpeg = null; }
   ffmpegBroken = false;
-  importScripts(FFMPEG_JS);
+  try {
+    importScripts(FFMPEG_JS);
+  } catch (e) {
+    throw new Error('ffmpeg.js 加载错误(' + FFMPEG_JS + '):' + (e && e.message || e));
+  }
   var FF = self.FFmpegWASM && self.FFmpegWASM.FFmpeg;
-  if (!FF) throw new Error('FFmpeg 脚本加载失败');
+  if (!FF) throw new Error('FFmpeg 脚本加载失败(FFmpegWASM 未定义)');
   ffmpeg = new FF();
   ffmpeg.on('progress', function (p) {
     if (activeId != null) {
@@ -70,7 +77,11 @@ async function ensureFfmpeg() {
   ffmpeg.on('log', function (m) {
     if (m && m.message) pushLog(m.message);
   });
-  await ffmpeg.load({ coreURL: CORE_JS_ABS, classWorkerURL: CLASS_WORKER_ABS });
+  try {
+    await ffmpeg.load({ coreURL: CORE_JS_ABS, classWorkerURL: CLASS_WORKER_ABS });
+  } catch (e) {
+    throw new Error('ffmpeg.load() 错误(core:' + CORE_JS_ABS + ', worker:' + CLASS_WORKER_ABS + '):' + (e && e.message || e));
+  }
 }
 
 async function handleInit(id) {

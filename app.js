@@ -38,6 +38,20 @@ function buildFileName(origName, fmt) {
   return baseName(origName) + '.' + (EXT_OF[fmt] || fmt);
 }
 
+/* 纯函数:根据输入文件名和输出扩展名生成输出文件名(同步,无异步依赖)
+   movie.mov + webm -> movie.webm
+   movie.MOV + webm -> movie.webm
+   test.video.avi + mp4 -> test.video.mp4
+   movie + mp4 -> movie.mp4
+   test video.mov + webm -> test video.webm */
+function getOutputFilename(inputName, outputExt) {
+  var base = baseName(inputName || 'video');
+  if (!base) base = 'video';
+  var ext = String(outputExt || 'mp4').toLowerCase().replace(/^\.+/, '');
+  if (!ext) ext = 'mp4';
+  return base + '.' + ext;
+}
+
 function isHeicFile(file) {
   var ext = getExt(file && file.name);
   var type = (file && file.type || '').toLowerCase();
@@ -604,6 +618,12 @@ function bindUI() {
   $('btnCancelVideo').addEventListener('click', function () {
     if (mode === 'video') cancelVideoConvert();
   });
+  var btnRetry = $('btnRetryEngine');
+  if (btnRetry) {
+    btnRetry.addEventListener('click', function () {
+      if (mode === 'video') retryVideoEngine();
+    });
+  }
   $('btnZip').addEventListener('click', function () {
     if (mode === 'video') downloadAllZipVideos(); else downloadAllZip();
   });
@@ -831,7 +851,7 @@ function verifyVideoOutput(buf, fmt) {
 /* ---- 视频引擎(FFmpeg.wasm,懒加载,只在视频模式初始化) ---- */
 
 /* worker 脚本版本: 修改 ffmpeg-worker.js 后务必同步 bump,让浏览器丢弃旧缓存 worker */
-var FFMPEG_WORKER_VER = 'v20260929n';
+var FFMPEG_WORKER_VER = 'v20260929o';
 var ffmpegWorker = null;
 var ffmpegReady = false;
 var ffmpegFailed = false;
@@ -858,16 +878,24 @@ function ensureVideoEngine() {
   if (typeof WebAssembly === 'undefined') {
     ffmpegFailed = true;
     setEngineStatus('err', '当前浏览器暂不支持视频转换。请升级浏览器后重试。');
+    try { console.error('[VideoEngine] WebAssembly 不可用'); } catch (e) {}
     flushEngineWaiters(new Error('WebAssembly 不可用'));
     return;
   }
   setEngineStatus('loading', '视频引擎加载中（首次约需下载 30MB，请稍候）…');
+  var workerUrl = 'ffmpeg-worker.js?' + FFMPEG_WORKER_VER;
+  try { console.log('[VideoEngine] 创建 Worker: ' + workerUrl); } catch (e) {}
   var worker;
   try {
-    worker = new Worker('ffmpeg-worker.js?' + FFMPEG_WORKER_VER);
+    worker = new Worker(workerUrl);
   } catch (e) {
     ffmpegFailed = true;
-    setEngineStatus('err', '视频引擎启动失败，请重试。');
+    setEngineStatus('err', '视频引擎加载失败');
+    try {
+      console.error('[VideoEngine] Worker 初始化错误: ' + workerUrl);
+      console.error('[VideoEngine] 原始 exception:', e);
+    } catch (ee) {}
+    showEngineRetry();
     flushEngineWaiters(e);
     return;
   }
@@ -878,6 +906,8 @@ function ensureVideoEngine() {
       ffmpegReady = true;
       ffmpegFailed = false;
       setEngineStatus('ok', '✓ 视频引擎就绪（本地转换，不上传）');
+      hideEngineRetry();
+      try { console.log('[VideoEngine] 初始化成功'); } catch (e) {}
       flushEngineWaiters(null);
     },
     reject: function (err) {
@@ -885,7 +915,12 @@ function ensureVideoEngine() {
       try { ffmpegWorker.terminate(); } catch (e) {}
       ffmpegWorker = null;
       delete pendingCalls[initId];
-      setEngineStatus('err', '视频引擎加载失败，请重新进入视频模式重试。');
+      setEngineStatus('err', '视频引擎加载失败');
+      try {
+        console.error('[VideoEngine] 初始化失败');
+        console.error('[VideoEngine] 原始 exception:', err);
+      } catch (ee) {}
+      showEngineRetry();
       flushEngineWaiters(err);
     }
   };
@@ -899,16 +934,37 @@ function ensureVideoEngine() {
     var call = pendingCalls[m.id];
     if (!call) return;
     delete pendingCalls[m.id];
-    if (m.type === 'error') call.reject(new Error(m.message || '未知错误'));
+    if (m.type === 'error') {
+      try { console.error('[VideoEngine] Worker 返回错误: ' + (m.message || '未知错误')); } catch (ee) {}
+      call.reject(new Error(m.message || '未知错误'));
+    }
     else if (m.type === 'ready') call.resolve();
     else if (m.type === 'done') call.resolve(m.data);
     else call.reject(new Error('未知响应:' + m.type));
   };
   worker.onerror = function (ev) {
+    try {
+      console.error('[VideoEngine] worker.onerror 触发');
+      console.error('[VideoEngine] message: ' + ((ev && ev.message) || '(无)'));
+      console.error('[VideoEngine] filename: ' + ((ev && ev.filename) || '(无)'));
+      console.error('[VideoEngine] lineno: ' + ((ev && ev.lineno) || '(无)'));
+      console.error('[VideoEngine] 原始 event:', ev);
+    } catch (ee) {}
     var call = pendingCalls[initId];
     if (call) {
       delete pendingCalls[initId];
       call.reject(new Error((ev && ev.message) || 'Worker 出错'));
+    }
+  };
+  worker.onmessageerror = function (ev) {
+    try {
+      console.error('[VideoEngine] worker.onmessageerror 触发(消息反序列化失败)');
+      console.error('[VideoEngine] 原始 event:', ev);
+    } catch (ee) {}
+    var call = pendingCalls[initId];
+    if (call) {
+      delete pendingCalls[initId];
+      call.reject(new Error('Worker 消息错误'));
     }
   };
   /* 60 秒超时保护 */
@@ -916,6 +972,7 @@ function ensureVideoEngine() {
     var call = pendingCalls[initId];
     if (call) {
       delete pendingCalls[initId];
+      try { console.error('[VideoEngine] 加载超时(60s): ' + workerUrl); } catch (ee) {}
       call.reject(new Error('视频引擎加载超时，请检查网络后重试'));
     }
   }, 60000);
@@ -923,7 +980,43 @@ function ensureVideoEngine() {
   var origReject = pendingCalls[initId].reject;
   pendingCalls[initId].resolve = function (v) { clearTimeout(tid); origResolve(v); };
   pendingCalls[initId].reject = function (e) { clearTimeout(tid); origReject(e); };
+  try { console.log('[VideoEngine] 发送 init 命令'); } catch (e) {}
   worker.postMessage({ id: initId, cmd: 'init' });
+}
+
+/* 真正的 Retry:终止 Worker,清理状态,重新创建并初始化 */
+function retryVideoEngine() {
+  try { console.log('[VideoEngine] 用户点击重试,开始重建'); } catch (e) {}
+  /* 1. terminate 当前 Worker */
+  if (ffmpegWorker) {
+    try { ffmpegWorker.terminate(); } catch (e) {}
+    ffmpegWorker = null;
+  }
+  /* 2. 清理 pendingCalls */
+  var calls = pendingCalls;
+  pendingCalls = {};
+  Object.keys(calls).forEach(function (id) {
+    try { calls[id].reject(new Error('引擎重建,旧请求已取消')); } catch (e) {}
+  });
+  /* 3. 清理 engineWaiters */
+  engineWaiters = [];
+  /* 4-6. 重置状态 */
+  ffmpegWorker = null;
+  ffmpegReady = false;
+  ffmpegFailed = false;
+  hideEngineRetry();
+  /* 7-8. 重新创建 Worker 并初始化 */
+  ensureVideoEngine();
+}
+
+function showEngineRetry() {
+  var btn = $('btnRetryEngine');
+  if (btn) btn.hidden = false;
+}
+
+function hideEngineRetry() {
+  var btn = $('btnRetryEngine');
+  if (btn) btn.hidden = true;
 }
 
 function whenEngineReady(cb) {
@@ -1196,12 +1289,23 @@ function finishVideoConvert(it, outBuf, fmt, t) {
   var blob = new Blob([outBuf], { type: VMIME_OF[fmt] || 'video/mp4' });
   it.outBlob = blob;
   it.outUrl = (window.URL || window.webkitURL).createObjectURL(blob);
-  it.outName = baseName(it.name) + '.' + (VEXT_OF[fmt] || fmt);
+  /* 文件名同步生成:不等待异步,不依赖 FFmpeg,不依赖 metadata */
+  it.outName = getOutputFilename(it.name, VEXT_OF[fmt] || fmt);
   it.outSize = blob.size;
   it.outW = t.w;
   it.outH = t.h;
   it.status = 'done';
   it.progress = 1;
+  /* 开发者日志:下载失败时快速定位 */
+  try {
+    console.log('[VideoConverter] input: ' + it.name +
+      ' | output: ' + it.outName +
+      ' | inputSize: ' + it.origSize +
+      ' | outputSize: ' + it.outSize +
+      ' | outputUrl: ' + (it.outUrl ? 'created' : 'FAILED') +
+      ' | outputName: ' + it.outName +
+      ' | status: done');
+  } catch (e) {}
 }
 
 function convertVideoItem(it, done) {
@@ -1317,7 +1421,23 @@ function convertAllVideos() {
 }
 
 function downloadVideoItem(it) {
-  if (it.status === 'done' && it.outBlob) downloadBlob(it.outBlob, it.outName);
+  if (it.status !== 'done' || !it.outBlob) return;
+  /* 防御:确保 URL 和文件名有效;文件名缺失时同步生成,不阻塞下载 */
+  var url = it.outUrl;
+  if (!url) {
+    try { url = (window.URL || window.webkitURL).createObjectURL(it.outBlob); it.outUrl = url; } catch (e) { return; }
+  }
+  var fname = it.outName;
+  if (!fname) {
+    fname = getOutputFilename(it.name, VEXT_OF[it.vfmt] || it.vfmt || 'mp4');
+    it.outName = fname;
+  }
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = fname;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 function downloadAllZipVideos() {
