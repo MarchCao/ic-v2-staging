@@ -99,6 +99,30 @@ input[type=range]{flex:1;min-width:140px;accent-color:var(--primary)}
   z-index:99;box-shadow:0 4px 16px rgba(0,0,0,.25);max-width:90vw;text-align:center}
 .toast[hidden]{display:none}
 
+/* 模式切换 */
+.mode-tabs{justify-content:center;margin-top:14px}
+.mode-tabs .fmt-btn{padding:9px 28px;font-size:16px}
+
+/* 视频引擎状态 */
+.engine-status{font-size:13.5px;color:var(--muted)}
+.engine-status.ok{color:var(--ok);font-weight:600}
+.engine-status.loading{color:var(--warn)}
+.engine-status.err{color:var(--danger)}
+
+/* 视频转换进度条(真实 FFmpeg 进度驱动) */
+.progress{height:8px;background:#eef2f7;border-radius:99px;overflow:hidden;margin-top:6px}
+.progress > i{display:block;height:100%;width:0;background:var(--primary);
+  border-radius:99px;transition:width .25s}
+.prog-text{font-size:12.5px;color:var(--muted);margin-top:2px}
+
+/* 视频缩略图占位(缩略图生成失败时) */
+.vthumb{width:72px;height:72px;border-radius:10px;background:#f3f4f6;flex:none;
+  display:flex;align-items:center;justify-content:center;font-size:30px}
+
+/* 列表内单视频输出格式选择 */
+.vfmt{padding:6px 8px;border:1.5px solid var(--line);border-radius:10px;
+  font-size:13px;background:#fff;color:var(--ink)}
+
 @media (max-width:560px){
   .modal-imgs{flex-direction:column}
   .file-item{flex-wrap:wrap}

@@ -3,31 +3,37 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>图片格式转换 - 纯本地 · 无广告 · 免费</title>
-<meta name="description" content="纯本地图片格式转换工具：PNG、JPEG、WebP、BMP、AVIF 互转，图片不上传服务器，无广告不收费。">
-<link rel="stylesheet" href="styles.css">
+<title>图片视频格式转换 - 免费在线本地转换</title>
+<meta name="description" content="免费图片和视频格式转换工具，支持 PNG、JPEG、AVIF、MP4、MOV、MKV、WebM 等格式，所有转换均在浏览器本地完成，不上传服务器。">
+<link rel="stylesheet" href="styles.css?v=20260929j">
 </head>
 <body>
 <header class="topbar">
-  <h1>🖼️ 图片格式转换</h1>
+  <h1>🔄 图片 / 视频格式转换</h1>
   <p class="tagline">纯本地转换 · 不上传服务器 · 无广告 · 不收费</p>
 </header>
 
 <main class="container">
 
+  <!-- 模式切换 -->
+  <div class="fmt-btns mode-tabs" id="modeTabs" role="tablist" aria-label="转换模式">
+    <button class="fmt-btn active" data-mode="image" role="tab" aria-selected="true">🖼️ 图片</button>
+    <button class="fmt-btn" data-mode="video" role="tab" aria-selected="false">🎬 视频</button>
+  </div>
+
   <!-- 上传区 -->
   <section class="card">
     <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="选择图片">
-      <div class="dz-icon">📤</div>
-      <div class="dz-text">点击选择图片，或拖拽到这里</div>
-      <div class="dz-hint">支持多选 · 也可直接 Ctrl+V 粘贴截图</div>
+      <div class="dz-icon" id="dzIcon">📤</div>
+      <div class="dz-text" id="dzText">点击选择图片，或拖拽到这里</div>
+      <div class="dz-hint" id="dzHint">支持多选 · 也可直接 Ctrl+V 粘贴截图</div>
       <input type="file" id="fileInput" accept="image/*" multiple hidden>
     </div>
     <div id="uploadTip" class="tip" hidden></div>
   </section>
 
-  <!-- 转换设置 -->
-  <section class="card">
+  <!-- 转换设置:图片模式 -->
+  <section class="card" id="imgSettings">
     <h2>⚙️ 转换设置</h2>
 
     <div class="setting-row">
@@ -66,6 +72,72 @@
     </div>
   </section>
 
+  <!-- 转换设置:视频模式 -->
+  <section class="card" id="vidSettings" hidden>
+    <h2>⚙️ 转换设置</h2>
+
+    <div class="setting-row">
+      <span class="setting-label">输出格式</span>
+      <div class="fmt-btns" id="vfmtBtns">
+        <button class="fmt-btn active" data-fmt="mp4">MP4</button>
+        <button class="fmt-btn" data-fmt="webm">WebM</button>
+        <button class="fmt-btn" data-fmt="mov">MOV</button>
+        <button class="fmt-btn" data-fmt="mkv">MKV</button>
+      </div>
+    </div>
+
+    <div class="setting-row">
+      <span class="setting-label">视频质量</span>
+      <div class="fmt-btns" id="vqBtns">
+        <button class="fmt-btn" data-q="small">小文件</button>
+        <button class="fmt-btn active" data-q="balanced">平衡</button>
+        <button class="fmt-btn" data-q="high">高质量</button>
+      </div>
+    </div>
+
+    <div class="setting-row">
+      <span class="setting-label">输出尺寸</span>
+      <div class="size-modes" id="vsizeModes">
+        <label><input type="radio" name="vsizeMode" value="orig" checked> 保持原尺寸</label>
+        <label><input type="radio" name="vsizeMode" value="1080p"> 1080p</label>
+        <label><input type="radio" name="vsizeMode" value="720p"> 720p</label>
+        <label><input type="radio" name="vsizeMode" value="480p"> 480p</label>
+        <label><input type="radio" name="vsizeMode" value="custom"> 自定义</label>
+      </div>
+    </div>
+
+    <div class="setting-row" id="vsizeInputs" hidden>
+      <span class="setting-label">尺寸(px)</span>
+      <input type="number" id="vinWidth" class="num" min="16" max="7680" placeholder="宽">
+      <span class="times">×</span>
+      <input type="number" id="vinHeight" class="num" min="16" max="7680" placeholder="高">
+      <label class="ratio"><input type="checkbox" id="vkeepRatio" checked> 保持纵横比</label>
+    </div>
+
+    <div class="setting-row">
+      <span class="setting-label">帧率</span>
+      <div class="size-modes" id="vfpsModes">
+        <label><input type="radio" name="vfps" value="keep" checked> 保持原帧率</label>
+        <label><input type="radio" name="vfps" value="24"> 24 FPS</label>
+        <label><input type="radio" name="vfps" value="30"> 30 FPS</label>
+        <label><input type="radio" name="vfps" value="60"> 60 FPS</label>
+      </div>
+    </div>
+
+    <div class="setting-row">
+      <span class="setting-label">音频</span>
+      <div class="size-modes" id="vaudioModes">
+        <label><input type="radio" name="vaudio" value="keep" checked> 保留音频</label>
+        <label><input type="radio" name="vaudio" value="mute"> 静音</label>
+      </div>
+    </div>
+
+    <div class="setting-row">
+      <span class="setting-label">视频引擎</span>
+      <span id="engineStatus" class="engine-status">未加载（首次进入视频模式时加载）</span>
+    </div>
+  </section>
+
   <!-- 批量操作 -->
   <section class="card actions">
     <button id="btnConvertAll" class="btn primary" disabled>⚡ 全部转换</button>
@@ -76,13 +148,13 @@
 
   <!-- 文件列表 -->
   <section class="card">
-    <h2>📋 图片列表</h2>
+    <h2 id="listTitle">📋 图片列表</h2>
     <div id="emptyState" class="empty">还没有图片，快去添加吧 👆</div>
     <ul id="fileList" class="file-list"></ul>
   </section>
 
   <footer class="foot">
-    所有转换均在您的浏览器本地完成，图片不会上传到任何服务器。<br>
+    所有转换均在您的浏览器本地完成，图片和视频都不会上传到任何服务器。<br>
     若 HEIC / HEIF 格式无法添加，请先在手机相册中导出为 JPG 后再转换。
   </footer>
 </main>
@@ -110,6 +182,6 @@
 <div id="toast" class="toast" hidden></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<script src="app.js"></script>
+<script src="app.js?v=20260929j"></script>
 </body>
 </html>
