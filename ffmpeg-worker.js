@@ -88,14 +88,17 @@ async function handleConvert(m) {
   try {
     await ensureFfmpeg();
     await ffmpeg.writeFile(m.inputName, new Uint8Array(m.inputData));
+    m.inputData = null; /* 已拷入 MEMFS,断开主线程 transfer 来的缓冲引用,帮助 GC */
     var ret = await ffmpeg.exec(m.args);
     if (ret !== 0) throw new Error('FFmpeg 执行失败,退出码:' + ret);
     var out = await ffmpeg.readFile(m.outputName);
     var buf = toArrayBuffer(out);
+    out = null;
     try { await ffmpeg.deleteFile(m.inputName); } catch (e) {}
     try { await ffmpeg.deleteFile(m.outputName); } catch (e) {}
     activeId = null;
     post({ id: m.id, type: 'done', data: buf }, [buf]);
+    buf = null;
   } catch (e) {
     activeId = null;
     ffmpegBroken = true; /* abort 后的 runtime 不可信,下次转换重建 */

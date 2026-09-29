@@ -141,6 +141,7 @@
   <!-- 批量操作 -->
   <section class="card actions">
     <button id="btnConvertAll" class="btn primary" disabled>⚡ 全部转换</button>
+    <button id="btnCancelVideo" class="btn danger" hidden>✕ 取消转换</button>
     <button id="btnZip" class="btn" disabled>📦 打包下载 ZIP</button>
     <button id="btnClear" class="btn danger" disabled>🗑️ 清空列表</button>
     <span id="countLabel" class="count"></span>
@@ -181,7 +182,7 @@
 
 <div id="toast" class="toast" hidden></div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<!-- JSZip 按需加载:只有点击"打包下载 ZIP"时才下载,不点击则零成本 -->
 <script src="app.js?v=20260929k"></script>
 </body>
 </html>

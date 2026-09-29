@@ -44,6 +44,17 @@ function isHeicFile(file) {
   return ext === 'heic' || ext === 'heif' || type === 'image/heic' || type === 'image/heif';
 }
 
+/* P2 HEIC/HEIF 说明(2026-09-29 评估结论):
+   - 浏览器原生:仅 Safari 可解码 HEIC;Chrome/Firefox/Edge 均不支持 canvas 绘制 HEIC。
+   - WASM 方案需引入 libheif(约 2MB),且 iPhone 直出的 HEIC 多为 12MP+,
+     与 MAX_IMAGE_PIXELS 内存保护存在叠加风险;暂无经过验证的自托管构建。
+   - 结论:本次不强行加入,保持"跳过+中文提示"逻辑;检测集中在 isHeicFile(),
+     未来如需支持,在此接入按需加载的 HEIC WASM(普通 JPG/PNG 用户零成本)。 */
+function heicSkipTip(names) {
+  return '⚠️ 以下 ' + names.length + ' 个文件为 HEIC/HEIF 格式，浏览器无法直接读取，已跳过：<br>' +
+    escapeHtml(names.join('、')) + '<br>请先在手机相册中导出为 JPG 后再转换。';
+}
+
 /* 计算目标尺寸;非法输入一律回退为原尺寸 */
 function computeTargetSize(origW, origH, mode, w, h, keepRatio) {
   origW = Math.round(origW) || 0;
@@ -129,7 +140,7 @@ var settings = {
   height: 0,
   keepRatio: true
 };
-var STATUS_TEXT = { wait: '待转换', doing: '转换中…', done: '已完成', fail: '失败' };
+var STATUS_TEXT = { wait: '待转换', doing: '转换中…', done: '已完成', fail: '失败', cancelled: '已取消' };
 
 /* ============ DOM 工具 ============ */
 function $(id) { return document.getElementById(id); }
@@ -156,13 +167,18 @@ function addFiles(fileList) {
   for (var i = 0; i < fileList.length; i++) files.push(fileList[i]);
   var heicNames = [];
   var badNames = [];
+  var dupNames = [];
   var added = 0;
+  var existKeys = {};
+  items.forEach(function (it) { existKeys[fileKey(it.file)] = 1; });
   files.forEach(function (f) {
     if (isHeicFile(f)) { heicNames.push(f.name); return; }
     var ft = (f.type || '').toLowerCase();
     var isImg = ft.indexOf('image/') === 0 ||
       /\.(png|jpe?g|gif|webp|bmp|avif|svg|ico|tiff?)$/i.test(f.name || '');
     if (!isImg) { badNames.push(f.name || '未命名文件'); return; }
+    if (existKeys[fileKey(f)]) { dupNames.push(f.name || '未命名文件'); return; }
+    existKeys[fileKey(f)] = 1;
     items.push({
       id: 'f' + (++uidSeed),
       file: f,
@@ -179,15 +195,19 @@ function addFiles(fileList) {
   });
   var tips = [];
   if (heicNames.length) {
-    tips.push('⚠️ 以下 ' + heicNames.length + ' 个文件为 HEIC/HEIF 格式，浏览器无法直接读取，已跳过：<br>' +
-      escapeHtml(heicNames.join('、')) + '<br>请先在手机相册中导出为 JPG 后再转换。');
+    tips.push(heicSkipTip(heicNames));
   }
   if (badNames.length) {
     tips.push('⚠️ 以下 ' + badNames.length + ' 个文件不是图片格式，已跳过：<br>' +
       escapeHtml(badNames.join('、')) + '<br>图片模式请选择图片文件。');
   }
+  if (dupNames.length) {
+    tips.push('ℹ️ 以下 ' + dupNames.length + ' 个文件已经添加，不再重复添加：<br>' +
+      escapeHtml(dupNames.join('、')));
+  }
   if (tips.length) { showTip(tips.join('<br><br>')); } else { hideTip(); }
   if (added) toast('已添加 ' + added + ' 张图片');
+  else if (dupNames.length && !badNames.length && !heicNames.length) toast('该文件已经添加。');
   render();
 }
 
@@ -266,9 +286,16 @@ function convertItem(it, done) {
     ctx.drawImage(img, 0, 0, t.w, t.h);
     /* BMP:浏览器 canvas 普遍不支持 BMP 编码,改用手动编码,保证各浏览器可用 */
     if (settings.fmt === 'bmp') {
+      /* P1:BMP 手动编码峰值约 12 字节/像素;超限则提示(用户若选了缩小输出则目标尺寸已变小,可继续) */
+      if (t.w * t.h > MAX_IMAGE_PIXELS) {
+        failConvert(it, '图片分辨率过高，浏览器转换可能占用大量内存。请先缩小图片尺寸。', done);
+        return;
+      }
       try {
         var imgData = ctx.getImageData(0, 0, t.w, t.h);
         var bmpBlob = new Blob([encodeBMPBuffer(imgData)], { type: 'image/bmp' });
+        /* 显式释放中间大对象引用 */
+        imgData = null;
         finishConvert(it, bmpBlob, 'bmp', t);
       } catch (e) {
         failConvert(it, '转换出错：' + e.message, done);
@@ -299,13 +326,26 @@ function convertItem(it, done) {
   });
 }
 
+var imgBatch = null; /* {done,total} 图片批量进度,供统计显示 */
 function convertAll() {
+  if (items.some(function (it) { return it.status === 'doing'; })) return; /* 转换中,防重复启动 */
   var queue = items.filter(function (it) { return it.status !== 'doing'; });
   if (!queue.length) { toast('没有可转换的图片'); return; }
+  imgBatch = { done: 0, total: queue.length };
+  render();
   var i = 0;
   (function next() {
-    if (i >= queue.length) { toast('全部转换完成'); return; }
-    convertItem(queue[i++], next);
+    if (i >= queue.length) {
+      imgBatch = null;
+      toast('全部转换完成');
+      render();
+      return;
+    }
+    var cur = queue[i++];
+    convertItem(cur, function () {
+      if (imgBatch) imgBatch.done++;
+      next();
+    });
   })();
 }
 
@@ -327,23 +367,38 @@ function downloadItem(it) {
   if (it.status === 'done' && it.outBlob) downloadBlob(it.outBlob, it.outName);
 }
 
+/* P1:ZIP 按需加载;加载失败则回退逐个下载,单个下载不受影响 */
+var jszipPromise = null;
+function ensureJSZip() {
+  if (typeof JSZip !== 'undefined') return Promise.resolve();
+  if (!jszipPromise) {
+    jszipPromise = new Promise(function (res, rej) {
+      var s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+      s.onload = function () { res(); };
+      s.onerror = function () { jszipPromise = null; rej(new Error('ZIP 组件加载失败')); };
+      document.head.appendChild(s);
+    });
+  }
+  return jszipPromise;
+}
+
 function downloadAllZip() {
   var doneItems = items.filter(function (it) { return it.status === 'done' && it.outBlob; });
   if (!doneItems.length) { toast('还没有转换完成的图片'); return; }
-  if (typeof JSZip === 'undefined') {
+  toast('正在准备打包…');
+  ensureJSZip().then(function () {
+    if (typeof JSZip === 'undefined') throw new Error('ZIP 组件加载失败');
+    var zip = new JSZip();
+    doneItems.forEach(function (it) { zip.file(it.outName, it.outBlob); });
+    return zip.generateAsync({ type: 'blob' });
+  }).then(function (content) {
+    downloadBlob(content, 'converted-images.zip');
+  }, function () {
     toast('ZIP 组件加载失败，已改为逐个下载（共 ' + doneItems.length + ' 张）');
     doneItems.forEach(function (it, i) {
       setTimeout(function () { downloadItem(it); }, i * 700);
     });
-    return;
-  }
-  var zip = new JSZip();
-  doneItems.forEach(function (it) { zip.file(it.outName, it.outBlob); });
-  toast('正在打包…');
-  zip.generateAsync({ type: 'blob' }).then(function (content) {
-    downloadBlob(content, 'converted-images.zip');
-  }, function () {
-    toast('打包失败，请改用单张下载');
   });
 }
 
@@ -399,10 +454,27 @@ function render() {
 
   var hasItems = items.length > 0;
   var hasDone = items.some(function (it) { return it.status === 'done'; });
-  $('btnConvertAll').disabled = !hasItems;
+  var converting = items.some(function (it) { return it.status === 'doing'; });
+  /* P1:转换中禁用"全部转换"并显示状态,防重复启动 */
+  $('btnConvertAll').disabled = !hasItems || converting;
+  $('btnConvertAll').textContent = converting ? '转换中…' : '⚡ 全部转换';
   $('btnZip').disabled = !hasDone;
   $('btnClear').disabled = !hasItems;
-  $('countLabel').textContent = hasItems ? ('共 ' + items.length + ' 张') : '';
+  $('btnCancelVideo').hidden = true; /* 取消按钮只属于视频模式 */
+  /* P1:统一任务统计 */
+  $('countLabel').textContent = hasItems ? imageCountText() : '';
+}
+
+/* P1:图片任务统计:共 X 张 · 已完成 X · 失败 X[ · 正在处理 X/Y] */
+function imageCountText() {
+  var done = 0, fail = 0;
+  items.forEach(function (it) {
+    if (it.status === 'done') done++;
+    else if (it.status === 'fail') fail++;
+  });
+  var t = '共 ' + items.length + ' 张 · 已完成 ' + done + ' · 失败 ' + fail;
+  if (imgBatch) t += ' · 正在处理 ' + Math.min(imgBatch.done + 1, imgBatch.total) + ' / ' + imgBatch.total;
+  return t;
 }
 
 /* 列表内按钮事件委托 */
@@ -529,6 +601,9 @@ function bindUI() {
   $('btnConvertAll').addEventListener('click', function () {
     if (mode === 'video') convertAllVideos(); else convertAll();
   });
+  $('btnCancelVideo').addEventListener('click', function () {
+    if (mode === 'video') cancelVideoConvert();
+  });
   $('btnZip').addEventListener('click', function () {
     if (mode === 'video') downloadAllZipVideos(); else downloadAllZip();
   });
@@ -586,6 +661,19 @@ var VCRF = {
   high: { x264: 18, vp9: 24 }
 };
 var VIDEO_EXTS = ['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v', '3gp', 'flv', 'wmv'];
+
+/* ---- 集中定义的限制常量(方便未来调整) ----
+   WASM/Worker 内存模型:输入 ArrayBuffer(主线程)→ transfer 给 Worker(零拷贝)
+   → FFmpeg writeFile 拷入 MEMFS(1x 文件大小,wasm 堆内)
+   → 解码帧缓冲 + 编码 + 输出文件(MEMFS 内)
+   单线程 wasm32 地址空间上限 4GB,实测大文件在 2x 文件大小附近即吃紧;
+   移动端 Safari 单标签页内存更低,故按"文件大小 2x + 编解码缓冲 < 地址空间"取保守值 */
+var MAX_VIDEO_FILE_SIZE = 2 * 1024 * 1024 * 1024;  /* 2GB:超过则阻止转换 */
+var WARN_VIDEO_FILE_SIZE = 200 * 1024 * 1024;     /* 200MB:超过则提示内存占用 */
+/* 图片:BMP 走手动 getImageData+逐像素拷贝,峰值约 12 字节/像素(canvas+ImageData+输出缓冲);
+   16MP(4096×4096)峰值约 192MB,桌面与主流移动端可承受;24MP+ 在移动端易崩溃 */
+var MAX_IMAGE_PIXELS = 16 * 1024 * 1024;          /* 16MP:仅限制 BMP 手动编码路径的目标尺寸 */
+var THUMB_CONCURRENCY = 2;                        /* 视频缩略图最大并发数 */
 
 /* ---- 纯函数(可在 node 下测试) ---- */
 
@@ -669,6 +757,76 @@ function videoSizeText(origSize, newSize) {
   return t;
 }
 
+/* ---- 视频错误分类(纯函数):技术细节写 console,UI 只显示简单中文 ---- */
+var VERR_TEXT = {
+  read: '文件读取失败，请重试',
+  demux: '无法解析该视频，输入格式可能不受支持',
+  enc: '编码器不支持，请换个输出格式试试',
+  mux: '输出的视频文件校验失败，请换个输出格式试试',
+  worker: '视频引擎异常，请重试',
+  exec: '视频处理失败，请重试',
+  mem: '内存不足，转换失败。请用更小的文件或降低输出尺寸后重试',
+  cancel: '已取消',
+  nowasm: '当前浏览器暂不支持视频转换。请升级浏览器后重试。'
+};
+
+function classifyVideoError(e) {
+  var msg = String((e && e.message) || '');
+  if (msg === '__cancelled__') return 'cancel';
+  if (e && e.code && VERR_TEXT[e.code]) return e.code;
+  if (/cannot allocate memory|out of memory|allocation failed|memory access out of bounds/i.test(msg)) return 'mem';
+  if (/unknown encoder|encoder .*not found|codec not supported/i.test(msg)) return 'enc';
+  if (/invalid data|could not find codec parameters|moov atom not found|demuxer|partial file/i.test(msg)) return 'demux';
+  if (/muxer|not a valid|校验失败/i.test(msg)) return 'mux';
+  if (/文件读取失败/i.test(msg)) return 'read';
+  if (/WebAssembly/i.test(msg)) return 'nowasm';
+  if (/Worker/i.test(msg)) return 'worker';
+  return 'exec';
+}
+
+function videoErrorText(e) {
+  var code = classifyVideoError(e);
+  if (typeof console !== 'undefined' && console.warn) {
+    console.warn('[视频转换][' + code + ']', (e && e.message) || e);
+  }
+  return VERR_TEXT[code] || VERR_TEXT.exec;
+}
+
+/* ---- 输出容器真实性检查(纯函数):不只看扩展名,验魔数 ----
+   MP4/MOV: 以 ftyp box 开头; WebM/MKV: EBML 头(0x1A45DFA3)+DocType(webm/matroska) */
+function verifyVideoOutput(buf, fmt) {
+  if (!buf || buf.byteLength <= 0) return '输出文件为空';
+  var u8 = new Uint8Array(buf);
+  function ascii(o, n) {
+    var s = '';
+    for (var i = 0; i < n; i++) s += String.fromCharCode(u8[o + i] || 0);
+    return s;
+  }
+  var label = String(fmt || '').toUpperCase();
+  if (fmt === 'mp4' || fmt === 'mov') {
+    var ok = ascii(4, 4) === 'ftyp';
+    if (!ok) {
+      /* 宽容:前 32 字节内找 ftyp */
+      for (var i = 0; i + 4 <= Math.min(32, u8.length); i++) {
+        if (ascii(i, 4) === 'ftyp') { ok = true; break; }
+      }
+    }
+    if (!ok) return '输出文件不是有效的 ' + label + ' 容器';
+  } else if (fmt === 'webm' || fmt === 'mkv') {
+    if (u8.length < 4 || u8[0] !== 0x1A || u8[1] !== 0x45 || u8[2] !== 0xDF || u8[3] !== 0xA3) {
+      return '输出文件不是有效的 ' + label + ' 容器';
+    }
+    var head = '';
+    var n = Math.min(u8.length, 4096);
+    for (var j = 0; j < n; j++) head += String.fromCharCode(u8[j]);
+    var want = fmt === 'webm' ? 'webm' : 'matroska';
+    if (head.indexOf(want) < 0) return '输出文件不是有效的 ' + label + ' 容器';
+  } else {
+    return '不支持的输出格式:' + label;
+  }
+  return null; /* 通过 */
+}
+
 /* ---- 视频引擎(FFmpeg.wasm,懒加载,只在视频模式初始化) ---- */
 
 /* worker 脚本版本: 修改 ffmpeg-worker.js 后务必同步 bump,让浏览器丢弃旧缓存 worker */
@@ -679,6 +837,7 @@ var ffmpegFailed = false;
 var engineWaiters = [];
 var msgSeq = 0;
 var pendingCalls = {};
+var videoBatchToken = 0; /* 批量转换令牌;取消时递增,让旧队列停止推进 */
 
 function setEngineStatus(cls, text) {
   var el = $('engineStatus');
@@ -852,13 +1011,44 @@ function captureVideoThumb(file) {
   });
 }
 
+/* P1:缩略图任务队列,最多 THUMB_CONCURRENCY 个并发,避免大量添加时 CPU/内存峰值 */
+var thumbQueue = [];
+var thumbActive = 0;
+function pumpThumbQueue() {
+  while (thumbActive < THUMB_CONCURRENCY && thumbQueue.length) {
+    var task = thumbQueue.shift();
+    thumbActive++;
+    task().then(function () {
+      thumbActive--;
+      pumpThumbQueue();
+    }, function () {
+      thumbActive--;
+      pumpThumbQueue();
+    });
+  }
+}
+function enqueueThumbTask(task) {
+  thumbQueue.push(task);
+  pumpThumbQueue();
+}
+
+/* 文件去重键:name+size+lastModified */
+function fileKey(f) {
+  return (f && f.name || '') + '|' + (f && f.size || 0) + '|' + (f && f.lastModified || 0);
+}
+
 function addVideoFiles(fileList) {
   var files = [];
   for (var i = 0; i < fileList.length; i++) files.push(fileList[i]);
   var badNames = [];
+  var dupNames = [];
   var added = 0;
+  var existKeys = {};
+  vitems.forEach(function (it) { existKeys[fileKey(it.file)] = 1; });
   files.forEach(function (f) {
     if (!isVideoFile(f)) { badNames.push(f.name || '未命名文件'); return; }
+    if (existKeys[fileKey(f)]) { dupNames.push(f.name || '未命名文件'); return; }
+    existKeys[fileKey(f)] = 1;
     var it = {
       id: 'v' + (++uidSeed),
       file: f,
@@ -875,23 +1065,32 @@ function addVideoFiles(fileList) {
     };
     vitems.push(it);
     added++;
-    /* 异步读取元信息与缩略图,不阻塞列表渲染 */
-    readVideoMeta(f).then(function (meta) {
-      it.vw = meta.w; it.vh = meta.h; it.duration = meta.duration;
-      if (mode === 'video') renderVideos();
-    });
-    captureVideoThumb(f).then(function (dataUrl) {
-      it.thumbUrl = dataUrl;
-      if (mode === 'video') renderVideos();
-    });
+    /* 元信息+缩略图走并发队列,不阻塞列表渲染;最终结果与之前一致 */
+    (function (item, file) {
+      enqueueThumbTask(function () {
+        return readVideoMeta(file).then(function (meta) {
+          item.vw = meta.w; item.vh = meta.h; item.duration = meta.duration;
+          if (mode === 'video') renderVideos();
+          return captureVideoThumb(file);
+        }).then(function (dataUrl) {
+          item.thumbUrl = dataUrl;
+          if (mode === 'video') renderVideos();
+        });
+      });
+    })(it, f);
   });
+  var tips = [];
   if (badNames.length) {
-    showTip('⚠️ 以下 ' + badNames.length + ' 个文件不是视频格式，已跳过：<br>' +
+    tips.push('⚠️ 以下 ' + badNames.length + ' 个文件不是视频格式，已跳过：<br>' +
       escapeHtml(badNames.join('、')) + '<br>视频模式请选择视频文件。');
-  } else {
-    hideTip();
   }
+  if (dupNames.length) {
+    tips.push('ℹ️ 以下 ' + dupNames.length + ' 个文件已经添加，不再重复添加：<br>' +
+      escapeHtml(dupNames.join('、')));
+  }
+  if (tips.length) { showTip(tips.join('<br><br>')); } else { hideTip(); }
   if (added) toast('已添加 ' + added + ' 个视频');
+  else if (dupNames.length && !badNames.length) toast('该文件已经添加。');
   renderVideos();
 }
 
@@ -929,6 +1128,37 @@ function clearVideos() {
   renderVideos();
 }
 
+/* P0:取消当前视频转换(页面不刷新)
+   1.立即终止 Worker(整个 wasm 实例销毁,MEMFS 随之释放,无残留)
+   2.清理全部 pendingCalls(逐个 reject,不断链)
+   3.当前 doing 项标记"已取消";其余待转换/已完成保留
+   4.引擎回到"未加载",下次转换重新创建 Worker(绝不复用已 terminate 的实例) */
+function cancelVideoConvert() {
+  videoBatchToken++; /* 让批量队列的 next() 停止推进 */
+  if (ffmpegWorker) {
+    try { ffmpegWorker.terminate(); } catch (e) {}
+    ffmpegWorker = null;
+  }
+  ffmpegReady = false;
+  ffmpegFailed = false;
+  var calls = pendingCalls;
+  pendingCalls = {};
+  Object.keys(calls).forEach(function (id) {
+    try { calls[id].reject(new Error('__cancelled__')); } catch (e) {}
+  });
+  engineWaiters = [];
+  vitems.forEach(function (it) {
+    if (it.status === 'doing') {
+      it.status = 'cancelled';
+      it.failMsg = '';
+      it.progress = 0;
+    }
+  });
+  setEngineStatus('', '未加载（首次进入视频模式时加载）');
+  renderVideos();
+  toast('已取消转换');
+}
+
 /* ---- 视频转换 ---- */
 
 function failVideoConvert(it, msg, done) {
@@ -957,14 +1187,29 @@ function finishVideoConvert(it, outBuf, fmt, t) {
 function convertVideoItem(it, done) {
   done = done || function () {};
   if (it.status === 'doing') { done(); return; }
+  /* P0:文件大小保护(转换前检查,此时才真正消耗内存) */
+  var fsize = (it.file && it.file.size) || 0;
+  if (fsize > MAX_VIDEO_FILE_SIZE) {
+    failVideoConvert(it, '文件过大，浏览器本地转换可能需要大量内存。', done);
+    return;
+  }
   it.status = 'doing';
   it.failMsg = '';
   it.progress = 0;
   it._lastProg = -1;
   renderVideos();
+  if (fsize > WARN_VIDEO_FILE_SIZE) {
+    toast('文件较大（' + formatBytes(fsize) + '），转换可能需要较多内存，请耐心等待');
+  }
   whenEngineReady(function (err) {
     if (err) {
-      failVideoConvert(it, '视频引擎加载失败，请检查网络后重试', done);
+      /* 取消:不标记失败,交给批量循环按 token 停止 */
+      if (classifyVideoError(err) === 'cancel' || it.status === 'cancelled') {
+        renderVideos();
+        done();
+        return;
+      }
+      failVideoConvert(it, videoErrorText(err), done);
       return;
     }
     var t = computeVideoSize(it.vw, it.vh, vsettings.sizeMode,
@@ -987,6 +1232,7 @@ function convertVideoItem(it, done) {
         r.readAsArrayBuffer(file);
       });
     getBuf.then(function (ab) {
+      /* transfer 给 Worker:主线程侧 ab 被剥离,内存所有权转移,不再双份占用 */
       return videoConvert(ab, inName, args, outName, function (p) {
         /* 真实 FFmpeg 进度;NaN(未知时长)时保持不确定状态 */
         if (typeof p === 'number' && isFinite(p)) {
@@ -999,30 +1245,53 @@ function convertVideoItem(it, done) {
         }
       });
     }).then(function (outBuf) {
+      /* P0:输出真实性检查(魔数+DocType),不只看扩展名 */
+      var vErr = verifyVideoOutput(outBuf, fmt);
+      if (vErr) {
+        var ve = new Error(vErr);
+        ve.code = 'mux';
+        throw ve;
+      }
       finishVideoConvert(it, outBuf, fmt, t);
+      outBuf = null; /* 显式断开引用,帮助 GC 及时回收输出缓冲 */
       renderVideos();
       done();
     }).catch(function (e) {
-      var msg = (e && e.message) || '';
-      if (/引擎|网络|超时|Worker|FFmpeg|执行失败|退出码/i.test(msg)) {
-        failVideoConvert(it, '视频引擎异常：' + msg + '，请重试', done);
-      } else {
-        failVideoConvert(it, '转换失败：该视频可能使用了当前 FFmpeg 版本不支持的编码格式', done);
+      if (classifyVideoError(e) === 'cancel' || it.status === 'cancelled') {
+        renderVideos();
+        done();
+        return;
       }
+      failVideoConvert(it, videoErrorText(e), done);
     });
   });
 }
 
 /* 串行批量转换:一次只跑一个 FFmpeg,避免移动端内存爆炸 */
+var videoBatch = null; /* {done,total} 批量进度,供统计显示 */
 function convertAllVideos() {
+  if (vitems.some(function (it) { return it.status === 'doing'; })) return; /* 转换中,防重复启动 */
   var queue = vitems.filter(function (it) { return it.status !== 'doing'; });
   if (!queue.length) { toast('没有可转换的视频'); return; }
   whenEngineReady(function (err) {
-    if (err) { toast('视频引擎加载失败，请检查网络后重试'); return; }
+    if (err) { toast(videoErrorText(err)); return; }
+    var token = ++videoBatchToken;
     var i = 0;
+    videoBatch = { done: 0, total: queue.length };
+    renderVideos();
     (function next() {
-      if (i >= queue.length) { toast('全部转换完成'); renderVideos(); return; }
-      convertVideoItem(queue[i++], next);
+      if (token !== videoBatchToken) { videoBatch = null; renderVideos(); return; } /* 已取消 */
+      if (i >= queue.length) {
+        videoBatch = null;
+        toast('全部转换完成');
+        renderVideos();
+        return;
+      }
+      var cur = queue[i++];
+      convertVideoItem(cur, function () {
+        if (token === videoBatchToken && videoBatch) videoBatch.done++;
+        next();
+      });
     })();
   });
 }
@@ -1034,20 +1303,19 @@ function downloadVideoItem(it) {
 function downloadAllZipVideos() {
   var doneItems = vitems.filter(function (it) { return it.status === 'done' && it.outBlob; });
   if (!doneItems.length) { toast('还没有转换完成的视频'); return; }
-  if (typeof JSZip === 'undefined') {
+  toast('正在准备打包…');
+  ensureJSZip().then(function () {
+    if (typeof JSZip === 'undefined') throw new Error('ZIP 组件加载失败');
+    var zip = new JSZip();
+    doneItems.forEach(function (it) { zip.file(it.outName, it.outBlob); });
+    return zip.generateAsync({ type: 'blob' });
+  }).then(function (content) {
+    downloadBlob(content, 'converted-videos.zip');
+  }, function () {
     toast('ZIP 组件加载失败，已改为逐个下载（共 ' + doneItems.length + ' 个）');
     doneItems.forEach(function (it, i) {
       setTimeout(function () { downloadVideoItem(it); }, i * 1200);
     });
-    return;
-  }
-  var zip = new JSZip();
-  doneItems.forEach(function (it) { zip.file(it.outName, it.outBlob); });
-  toast('正在打包…');
-  zip.generateAsync({ type: 'blob' }).then(function (content) {
-    downloadBlob(content, 'converted-videos.zip');
-  }, function () {
-    toast('打包失败，请改用单个下载');
   });
 }
 
@@ -1064,6 +1332,7 @@ function renderVideos() {
   var list = $('fileList');
   $('emptyState').style.display = vitems.length ? 'none' : 'block';
   if (!vitems.length) $('emptyState').textContent = '还没有视频，快去添加吧 👆';
+  var converting = vitems.some(function (it) { return it.status === 'doing'; });
   var html = '';
   vitems.forEach(function (it) {
     html += '<li class="file-item" data-id="' + it.id + '">';
@@ -1093,7 +1362,8 @@ function renderVideos() {
     }
     html += '</div></div>';
     html += '<div class="item-btns">';
-    if (it.status === 'wait' || it.status === 'fail') {
+    /* 批量转换中隐藏单项"转换"按钮:Worker 一次只处理一个,避免并发错乱 */
+    if ((it.status === 'wait' || it.status === 'fail' || it.status === 'cancelled') && !converting) {
       html += '<select class="vfmt" data-id="' + it.id + '" aria-label="输出格式">' +
         '<option value="mp4"' + ((it.vfmt === 'mp4') ? ' selected' : '') + '>MP4</option>' +
         '<option value="webm"' + ((it.vfmt === 'webm') ? ' selected' : '') + '>WebM</option>' +
@@ -1112,10 +1382,27 @@ function renderVideos() {
 
   var hasItems = vitems.length > 0;
   var hasDone = vitems.some(function (it) { return it.status === 'done'; });
-  $('btnConvertAll').disabled = !hasItems;
+  /* P1:转换中禁用"全部转换"并显示状态,防重复启动;转换中显示"取消转换" */
+  $('btnConvertAll').disabled = !hasItems || converting;
+  $('btnConvertAll').textContent = converting ? '转换中…' : '⚡ 全部转换';
   $('btnZip').disabled = !hasDone;
   $('btnClear').disabled = !hasItems;
-  $('countLabel').textContent = hasItems ? ('共 ' + vitems.length + ' 个') : '';
+  $('btnCancelVideo').hidden = !converting;
+  /* P1:统一任务统计 */
+  $('countLabel').textContent = hasItems ? videoCountText() : '';
+}
+
+/* P1:视频任务统计:共 X 个 · 已完成 X · 失败 X · 已取消 X[ · 正在处理 X/Y] */
+function videoCountText() {
+  var done = 0, fail = 0, cancelled = 0;
+  vitems.forEach(function (it) {
+    if (it.status === 'done') done++;
+    else if (it.status === 'fail') fail++;
+    else if (it.status === 'cancelled') cancelled++;
+  });
+  var t = '共 ' + vitems.length + ' 个 · 已完成 ' + done + ' · 失败 ' + fail + ' · 已取消 ' + cancelled;
+  if (videoBatch) t += ' · 正在处理 ' + Math.min(videoBatch.done + 1, videoBatch.total) + ' / ' + videoBatch.total;
+  return t;
 }
 
 function bindVideoListEvents() {
@@ -1297,6 +1584,16 @@ if (typeof module !== 'undefined' && module.exports) {
     buildFfmpegArgs: buildFfmpegArgs,
     videoSizeText: videoSizeText,
     VEXT_OF: VEXT_OF,
-    VCRF: VCRF
+    VCRF: VCRF,
+    /* V2.1 新增纯函数 */
+    classifyVideoError: classifyVideoError,
+    verifyVideoOutput: verifyVideoOutput,
+    fileKey: fileKey,
+    heicSkipTip: heicSkipTip,
+    VERR_TEXT: VERR_TEXT,
+    MAX_VIDEO_FILE_SIZE: MAX_VIDEO_FILE_SIZE,
+    WARN_VIDEO_FILE_SIZE: WARN_VIDEO_FILE_SIZE,
+    MAX_IMAGE_PIXELS: MAX_IMAGE_PIXELS,
+    THUMB_CONCURRENCY: THUMB_CONCURRENCY
   };
 }
