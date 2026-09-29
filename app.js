@@ -732,7 +732,8 @@ function buildFfmpegArgs(o) {
   if (o.w > 0 && o.h > 0) vf.push('scale=' + o.w + ':' + o.h);
   var isVp9 = o.outFmt === 'webm';
   if (isVp9) {
-    /* 注意:此单线程 wasm 版 libvpx 的帧间预测路径会崩溃(wasm OOB,第 2 帧起),
+    /* 注意:此单线程 wasm 版 libvpx 的帧间预测路径会崩溃或停滞(wasm OOB,第 2 帧起),
+       2026-09-29 实测:正常 GOP 下 10 秒 640×360 视频 10 分钟无法完成;
        已实测 -g 1(全关键帧)可稳定编码;文件会比帧间编码大,但保证可用 */
     a.push('-c:v', 'libvpx-vp9', '-b:v', '0',
       '-crf', String((VCRF[o.quality] || VCRF.balanced).vp9), '-cpu-used', '2', '-g', '1');
@@ -830,7 +831,7 @@ function verifyVideoOutput(buf, fmt) {
 /* ---- 视频引擎(FFmpeg.wasm,懒加载,只在视频模式初始化) ---- */
 
 /* worker 脚本版本: 修改 ffmpeg-worker.js 后务必同步 bump,让浏览器丢弃旧缓存 worker */
-var FFMPEG_WORKER_VER = 'v20260929k';
+var FFMPEG_WORKER_VER = 'v20260929n';
 var ffmpegWorker = null;
 var ffmpegReady = false;
 var ffmpegFailed = false;
@@ -1042,12 +1043,17 @@ function addVideoFiles(fileList) {
   for (var i = 0; i < fileList.length; i++) files.push(fileList[i]);
   var badNames = [];
   var dupNames = [];
+  var tooBigNames = [];
   var added = 0;
   var existKeys = {};
   vitems.forEach(function (it) { existKeys[fileKey(it.file)] = 1; });
   files.forEach(function (f) {
     if (!isVideoFile(f)) { badNames.push(f.name || '未命名文件'); return; }
     if (existKeys[fileKey(f)]) { dupNames.push(f.name || '未命名文件'); return; }
+    /* 添加时即做大小保护:超过 2GB 直接阻止,不加入列表 */
+    if (f.size > MAX_VIDEO_FILE_SIZE) { tooBigNames.push(f.name || '未命名文件'); return; }
+    /* 超过 200MB 允许添加,但提示内存占用 */
+    var warnBig = f.size > WARN_VIDEO_FILE_SIZE;
     existKeys[fileKey(f)] = 1;
     var it = {
       id: 'v' + (++uidSeed),
@@ -1088,9 +1094,23 @@ function addVideoFiles(fileList) {
     tips.push('ℹ️ 以下 ' + dupNames.length + ' 个文件已经添加，不再重复添加：<br>' +
       escapeHtml(dupNames.join('、')));
   }
+  if (tooBigNames.length) {
+    tips.push('⚠️ 以下 ' + tooBigNames.length + ' 个文件过大，已跳过：<br>' +
+      escapeHtml(tooBigNames.join('、')) + '<br>文件过大，浏览器本地转换可能需要大量内存。');
+  }
   if (tips.length) { showTip(tips.join('<br><br>')); } else { hideTip(); }
-  if (added) toast('已添加 ' + added + ' 个视频');
-  else if (dupNames.length && !badNames.length) toast('该文件已经添加。');
+  if (added) {
+    toast('已添加 ' + added + ' 个视频');
+    /* 大文件警告:添加成功但提示内存占用 */
+    var warnItem = null;
+    vitems.slice(-added).forEach(function (it) {
+      if (!warnItem && it.file && it.file.size > WARN_VIDEO_FILE_SIZE) warnItem = it;
+    });
+    if (warnItem) {
+      toast('⚠️ 文件较大（' + formatBytes(warnItem.file.size) + '），转换可能需要较多内存，请耐心等待');
+    }
+  }
+  else if (dupNames.length && !badNames.length && !tooBigNames.length) toast('该文件已经添加。');
   renderVideos();
 }
 
