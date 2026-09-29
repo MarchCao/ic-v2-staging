@@ -365,6 +365,7 @@ function closeCompare() { $('modal').hidden = true; }
 /* ============ 渲染 ============ */
 function render() {
   var list = $('fileList');
+  if (!items.length) $('emptyState').textContent = '还没有图片，快去添加吧 👆';
   $('emptyState').style.display = items.length ? 'none' : 'block';
   var html = '';
   items.forEach(function (it) {
@@ -671,7 +672,7 @@ function videoSizeText(origSize, newSize) {
 /* ---- 视频引擎(FFmpeg.wasm,懒加载,只在视频模式初始化) ---- */
 
 /* worker 脚本版本: 修改 ffmpeg-worker.js 后务必同步 bump,让浏览器丢弃旧缓存 worker */
-var FFMPEG_WORKER_VER = 'v20260929j';
+var FFMPEG_WORKER_VER = 'v20260929k';
 var ffmpegWorker = null;
 var ffmpegReady = false;
 var ffmpegFailed = false;
