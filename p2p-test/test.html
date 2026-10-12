@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><title>PDF2PPTX Phase1 浏览器实测</title>
+<style>pre{background:#111;color:#0f0;padding:12px;white-space:pre-wrap;word-break:break-all;font-size:13px}canvas{border:1px solid #888;max-width:300px}</style>
+</head>
+<body>
+<h2>PDF2PPTX Phase 1 浏览器实测</h2>
+<pre id="out">运行中…</pre>
+<div id="imgs"></div>
+<script src="https://cdn.jsdelivr.net/npm/pptxgenjs@4.0.1/dist/pptxgen.bundle.js"></script>
+<script type="module">
+const out = [];
+const log = (s) => { out.push(s); document.getElementById('out').textContent = out.join('\n'); };
+window.addEventListener('error', e => log('页面错误: ' + e.message));
+try {
+  const pdfjs = await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/legacy/build/pdf.min.mjs');
+  pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/legacy/build/pdf.worker.min.mjs';
+  log('PDF.js legacy 已加载');
+
+  const t0 = performance.now();
+  const doc = await pdfjs.getDocument({ url: 'sample.pdf' }).promise;
+  log('PDF 加载 OK: 页数=' + doc.numPages + ' 耗时=' + Math.round(performance.now() - t0) + 'ms');
+
+  // 页面信息 + 文本
+  const page1 = await doc.getPage(1);
+  const vp = page1.getViewport({ scale: 1 });
+  log('P1 尺寸: ' + vp.width.toFixed(0) + 'x' + vp.height.toFixed(0) + 'pt 比例=' + (vp.width / vp.height).toFixed(3));
+  const tc = await page1.getTextContent();
+  log('P1 文本项=' + tc.items.length + ' 首项="' + (tc.items[0] ? tc.items[0].str : '') + '"');
+
+  // 渲染 P3 + 主色采样
+  const page3 = await doc.getPage(3);
+  const v3 = page3.getViewport({ scale: 1 });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.floor(v3.width); canvas.height = Math.floor(v3.height);
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const tr = performance.now();
+  await page3.render({ canvasContext: ctx, viewport: v3 }).promise;
+  log('P3 渲染 OK: ' + canvas.width + 'x' + canvas.height + ' 耗时=' + Math.round(performance.now() - tr) + 'ms');
+  document.getElementById('imgs').appendChild(canvas);
+  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  const counts = new Map();
+  let total = 0;
+  for (let i = 0; i < imgData.length; i += 16) {
+    const r = imgData[i], g = imgData[i + 1], b = imgData[i + 2];
+    if (r > 245 && g > 245 && b > 245) continue; // 跳过近白
+    const key = ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
+    counts.set(key, (counts.get(key) || 0) + 1); total++;
+  }
+  const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k, n]) => {
+    const r = ((k >> 10) & 31) << 3, g = ((k >> 5) & 31) << 3, b = (k & 31) << 3;
+    const hex = '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+    return hex + ' ' + (n / total * 100).toFixed(1) + '%';
+  });
+  log('P3 主色 Top5(量化近似): ' + top.join(' | '));
+  log('  (原 PDF 主色真值 #1F4E79, 图片为蓝→橙渐变)');
+
+  // 嵌入图片提取
+  const ops = await page3.getOperatorList();
+  const IMG_OPS = [pdfjs.OPS.paintImageXObject, pdfjs.OPS.paintJpegXObject];
+  let imgId = null;
+  ops.fnArray.forEach((fn, i) => { if (IMG_OPS.includes(fn) && !imgId) imgId = ops.argsArray[i][0]; });
+  log('P3 图片对象 id=' + imgId);
+  if (imgId) {
+    const img = await new Promise((res, rej) => {
+      const done = (v) => res(v);
+      try { page3.objs.get(imgId, done); } catch (e) { rej(e); }
+      setTimeout(() => rej(new Error('objs.get 超时')), 8000);
+    });
+    log('图片对象: ' + img.width + 'x' + img.height + ' kind=' + img.kind);
+    const ic = document.createElement('canvas');
+    ic.width = img.width; ic.height = img.height;
+    const ictx = ic.getContext('2d');
+    if (img.bitmap) { ictx.drawImage(img.bitmap, 0, 0); }
+    else if (img.data) {
+      const px = new Uint8ClampedArray(img.width * img.height * 4);
+      if (img.kind === 3) px.set(img.data);
+      else if (img.kind === 2) { for (let s = 0, d = 0; s < img.data.length; s += 3, d += 4) { px[d] = img.data[s]; px[d + 1] = img.data[s + 1]; px[d + 2] = img.data[s + 2]; px[d + 3] = 255; } }
+      ictx.putImageData(new ImageData(px, img.width, img.height), 0, 0);
+    }
+    const dataUrl = ic.toDataURL('image/png');
+    log('图片提取 OK: PNG dataURL 长度=' + dataUrl.length);
+    document.getElementById('imgs').appendChild(ic);
+
+    // 浏览器内 PPTX 生成(同版本库, 可编辑性已由 Node+python-pptx 验证)
+    const pptx = new PptxGenJS();
+    pptx.defineLayout({ name: 'W', width: 13.33, height: 7.5 }); pptx.layout = 'W';
+    const s = pptx.addSlide();
+    s.addShape('rect', { x: 0, y: 0, w: 13.33, h: 1.0, fill: { color: '1F4E79' } });
+    s.addText('製品イメージ（ブラウザ生成テスト）', { x: 0.6, y: 0.2, w: 12, h: 0.6, fontSize: 26, bold: true, color: 'FFFFFF' });
+    s.addImage({ data: dataUrl, x: 0.6, y: 1.5, w: 5, h: 3.1 });
+    await pptx.writeFile({ fileName: 'browser-poc.pptx' });
+    log('PPTX-GEN OK (浏览器内生成并触发下载)');
+  }
+  log('ALL DONE');
+} catch (e) {
+  log('FAIL: ' + (e && e.name) + ': ' + (e && e.message));
+}
+</script>
+</body>
+</html>
