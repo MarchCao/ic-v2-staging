@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PDF 翻译稿转 PPTX · shift.haice.top</title>
+<meta name="description" content="在浏览器本地把已翻译好的文稿按原 PDF 风格排版成可编辑 PPTX：上传 PDF、粘贴译文、按页生成。不上传服务器，无广告，不收费。">
+<link rel="stylesheet" href="styles.css?v=1">
+</head>
+<body>
+<header class="top">
+  <a class="back" href="/">← 返回格式转换</a>
+  <h1>📊 PDF 翻译稿转 PPTX</h1>
+  <p class="tagline">上传原 PDF + 粘贴译文 → 按页生成可编辑的 PowerPoint</p>
+</header>
+<div id="status" class="status">请选择 PDF 文件开始。</div>
+
+<main class="container">
+  <div class="tip privacy">
+    🔒 PDF 解析与 PPTX 生成尽可能在您的设备本地完成。本工具不会将您的 PDF 或译文上传到本网站服务器。处理结果默认仅保留在当前页面会话中。
+  </div>
+
+  <section class="card">
+    <h2>步骤 1 · 上传 PDF</h2>
+    <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="选择 PDF">
+      <div class="dz-icon">📄</div>
+      <div class="dz-text">点击选择 PDF，或拖拽到这里</div>
+      <div class="dz-hint">仅读取页面结构、文本与图片，用于排版参考</div>
+      <input type="file" id="fileInput" accept="application/pdf,.pdf" hidden>
+    </div>
+    <div id="pdfInfo" class="info"></div>
+    <div id="scanWarn" class="tip warnbox" hidden>
+      该 PDF 可能是扫描版或图片型 PDF。首期无法保证自动提取全部文字，请提供可复制的文本或使用支持 OCR 的工具提取文字后再继续。（译文粘贴与生成不受影响，仍可继续。）
+    </div>
+    <div id="thumbs" class="thumbs"></div>
+  </section>
+
+  <section class="card">
+    <h2>步骤 2 · 粘贴完整译文</h2>
+    <textarea id="fullText" class="big-input" rows="10" placeholder="把翻译好的全文粘贴到这里。用一行 ---PAGE--- 表示新的一页，例如：
+
+---PAGE---
+表紙
+プロジェクト提案書
+---PAGE---
+プロジェクトの背景
+現在の課題と改善目標"></textarea>
+    <div class="row">
+      <label>页面分隔符 <input id="sepInput" type="text" value="---PAGE---" class="sep-input"></label>
+      <button id="btnParse" class="btn">解析译文</button>
+    </div>
+    <div id="parseInfo" class="info"></div>
+  </section>
+
+  <section class="card" id="matchCard" hidden>
+    <h2>步骤 3 · 检查页面对应关系</h2>
+    <div id="matchInfo" class="info"></div>
+    <label id="confirmWrap" class="confirm" hidden>
+      <input type="checkbox" id="confirmMismatch"> 页数不一致，我确认按译文页数生成（多出的译文会成页，缺译文的 PDF 页不会出现在 PPT 中）
+    </label>
+    <div id="pageEditors" class="editors"></div>
+  </section>
+
+  <section class="card">
+    <h2>步骤 4 · 生成设置</h2>
+    <div class="row">
+      <label>目标语言
+        <select id="langSel">
+          <option value="zh">中文</option>
+          <option value="ja" selected>日本語</option>
+          <option value="en">English</option>
+        </select>
+      </label>
+      <label>页面尺寸
+        <select id="sizeSel">
+          <option value="wide" selected>16:9 宽屏</option>
+          <option value="pdf">沿用原 PDF 比例</option>
+        </select>
+      </label>
+      <label>主色 <input type="color" id="colorInput" value="#1F4E79"> <span id="colorNote" class="hint">未加载 PDF，暂用默认商务蓝</span></label>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>步骤 5 · 生成 PPTX</h2>
+    <button id="btnGenerate" class="btn primary" disabled>生成并下载 PPTX</button>
+    <div id="gateHint" class="hint">请先完成：上传 PDF → 粘贴并解析译文 → 页数一致（或已确认不一致）。</div>
+    <div id="genResult" class="info"></div>
+    <ul id="warnList" class="warnlist"></ul>
+    <div class="tip" id="imgNote" hidden>提示：从原 PDF 提取的图片若内部含有源语言文字，图片中的文字不会被翻译，请在 PowerPoint 中检查并按需替换图片。</div>
+  </section>
+
+  <div class="row end">
+    <button id="btnClear" class="btn danger">🗑 清除当前会话（文件、译文与生成结果）</button>
+  </div>
+  <p class="foot">全部处理在浏览器本地进行 · 无广告 · 不收费</p>
+</main>
+
+<script src="vendor/pptxgen.bundle.js"></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
