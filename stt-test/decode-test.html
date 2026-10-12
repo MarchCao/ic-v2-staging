@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><title>Phase1 解码与能力测试</title></head>
+<body>
+<h2>Phase 1: decodeAudioData + 浏览器能力测试</h2>
+<pre id="out">运行中…</pre>
+<script type="module">
+const out = [];
+const log = (s) => { out.push(s); document.getElementById('out').textContent = out.join('\n'); };
+log('UA: ' + navigator.userAgent);
+log('crossOriginIsolated: ' + window.crossOriginIsolated);
+log('SharedArrayBuffer: ' + (typeof SharedArrayBuffer !== 'undefined'));
+log('WebGPU(navigator.gpu): ' + (!!navigator.gpu));
+log('AudioContext: ' + (typeof AudioContext !== 'undefined'));
+log('OfflineAudioContext: ' + (typeof OfflineAudioContext !== 'undefined'));
+
+const files = ['zh.wav', 'zh.mp3', 'zh-synthetic.m4a', 'en.mp3'];
+for (const f of files) {
+  try {
+    const t = performance.now();
+    const resp = await fetch('audio/' + f);
+    const buf = await resp.arrayBuffer();
+    const ctx = new OfflineAudioContext(1, 1, 16000);
+    const audio = await ctx.decodeAudioData(buf);
+    log(`DECODE OK  ${f}: 时长=${audio.duration.toFixed(2)}s 采样率=${audio.sampleRate} 声道=${audio.numberOfChannels} 耗时=${(performance.now() - t).toFixed(0)}ms`);
+  } catch (e) {
+    log(`DECODE FAIL ${f}: ${e.name}: ${e.message}`);
+  }
+}
+// 损坏文件
+try {
+  const ctx = new OfflineAudioContext(1, 1, 16000);
+  await ctx.decodeAudioData(new TextEncoder().encode('not audio at all').buffer);
+  log('DECODE 损坏文件: 意外成功');
+} catch (e) { log('DECODE 损坏文件: 正确报错 ' + e.name); }
+log('ALL DONE');
+window.__done = out;
+</script>
+</body>
+</html>
